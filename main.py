@@ -86,14 +86,17 @@ def info_via_ytdlp(url: str):
     formats_list = []
 
     for f in info.get("formats", []):
-        vcodec = f.get("vcodec", "none")
-        acodec = f.get("acodec", "none")
-        ext = f.get("ext", "")
+        vcodec = str(f.get("vcodec", "none")).lower()
+        acodec = str(f.get("acodec", "none")).lower()
+        ext = f.get("ext", "mp4")
         height = f.get("height") or 0
         filesize = f.get("filesize") or f.get("filesize_approx") or 0
 
-        # Progressive video (video+audio combined), mp4, up to 720p
-        if vcodec != "none" and acodec != "none" and ext == "mp4" and height <= 720 and height > 0:
+        has_video = vcodec not in ("none", "false", "")
+        has_audio = acodec not in ("none", "false", "")
+
+        # Progressive video (video+audio combined) up to 720p
+        if has_video and has_audio and height <= 720 and height > 0:
             formats_list.append({
                 "url": f.get("url"),
                 "resolution": f"{height}p",
@@ -102,7 +105,7 @@ def info_via_ytdlp(url: str):
                 "type": "video",
             })
         # Best audio-only
-        elif vcodec == "none" and acodec != "none":
+        elif not has_video and has_audio:
             formats_list.append({
                 "url": f.get("url"),
                 "resolution": f"{f.get('abr', 'N/A')} kbps Audio",
