@@ -43,7 +43,7 @@ def search_via_ytdlp(q: str):
                 "url": f"https://www.youtube.com/watch?v={entry.get('id')}",
                 "title": entry.get("title"),
                 "author": entry.get("uploader") or entry.get("channel"),
-                "thumbnail_url": entry.get("thumbnail"),
+                "thumbnail_url": entry.get("thumbnail") or f"https://i.ytimg.com/vi/{entry.get('id')}/hqdefault.jpg",
                 "length": entry.get("duration"),
                 "views": entry.get("view_count"),
             })
