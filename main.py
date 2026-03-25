@@ -138,92 +138,7 @@ def info_via_ytdlp(url: str):
                 "type": "video" if str(f.get("vcodec", "none")).lower() != "none" else "audio",
             })
 
-    # Ultimate Proxy Fallback if VPS IP is completely blocked from getting video URLs
-    debug_logs = []
-    if not formats_list:
-        import urllib.request
-        import json
-        video_id = url.split("v=")[-1].split("&")[0]
-        
-        # 1. Piped API Fallback
-        piped_instances = ["https://pipedapi.kavin.rocks", "https://pipedapi.in.projectsegfau.lt"]
-        for p_inst in piped_instances:
-            try:
-                req = urllib.request.Request(f"{p_inst}/streams/{video_id}", headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    piped_data = json.loads(response.read().decode())
-                for stream in piped_data.get("videoStreams", []):
-                    if stream.get("videoOnly"): continue
-                    resol = stream.get("quality", "Unknown")
-                    formats_list.append({
-                        "url": stream.get("url"),
-                        "resolution": resol,
-                        "filesize": None,
-                        "mime_type": f"video/{str(stream.get('format', 'mp4')).lower()}",
-                        "type": "video"
-                    })
-                for stream in piped_data.get("audioStreams", []):
-                    formats_list.append({
-                        "url": stream.get("url"),
-                        "resolution": stream.get("quality", "Audio"),
-                        "filesize": None,
-                        "mime_type": f"audio/{str(stream.get('format', 'm4a')).lower()}",
-                        "type": "audio"
-                    })
-                if formats_list:
-                    break
-            except Exception as ex:
-                debug_logs.append(f"Piped {p_inst} error: {str(ex)}")
-
-        # 2. Public invidious instances fallback
-        if not formats_list:
-            instances = ["https://vid.puffyan.us", "https://invidious.nerdvpn.de", "https://yewtu.be"]
-            for instance in instances:
-                try:
-                    req = urllib.request.Request(f"{instance}/api/v1/videos/{video_id}", headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-                    with urllib.request.urlopen(req, timeout=10) as response:
-                        data = json.loads(response.read().decode())
-                    
-                    for f in data.get("formatStreams", []):
-                        resol = f.get("resolution", "Unknown")
-                        if "1080" in resol or "4k" in resol.lower() or "1440" in resol: continue
-                        formats_list.append({
-                            "url": f.get("url"),
-                            "resolution": resol,
-                            "filesize": None,
-                            "mime_type": str(f.get("type", "video/mp4")).split(";")[0],
-                            "type": "video"
-                        })
-                    
-                    for f in data.get("adaptiveFormats", []):
-                        mime = str(f.get("type", "")).split(";")[0]
-                        if mime.startswith("audio/"):
-                            formats_list.append({
-                                "url": f.get("url"),
-                                "resolution": f.get("quality", "Audio") + " " + f.get("bitrate", "kbps"),
-                                "filesize": None,
-                                "mime_type": mime,
-                                "type": "audio"
-                            })
-                    if formats_list:
-                        break
-                except Exception as ex:
-                    debug_logs.append(f"Invidious {instance} error: {str(ex)}")
-                    continue
-                    
-    # Inject debug format if absolutely everything failed
-    if not formats_list:
-        cookie_status = "FOUND" if os.path.exists(COOKIE_PATH) else "MISSING"
-        formats_list.append({
-            "url": "ERROR_DEBUG_INFO",
-            "resolution": "Debug Info",
-            "filesize": None,
-            "mime_type": "text/plain",
-            "type": "debug",
-            "debug_txt": f"Cookies: {cookie_status} | Logs: " + " | ".join(debug_logs)
-        })
-
-    # Deduplicate resolutions, keep highest filesize per resolution
+    # Do not inject debug formats here, let it return empty so the router can fall back to pytubefix
     seen = {}
     for fmt in formats_list:
         key = (fmt["resolution"], fmt["type"])
@@ -245,7 +160,8 @@ def info_via_ytdlp(url: str):
 
 def info_via_pytubefix(url: str):
     from pytubefix import YouTube
-    yt = YouTube(url, use_oauth=False, allow_oauth_cache=True, client="WEB")
+    # ANDROID_VR client natively bypasses YouTube VPS Bot detection (429) without needing cookies
+    yt = YouTube(url, use_oauth=False, allow_oauth_cache=True, client="ANDROID_VR")
 
     formats_list = []
     streams = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc()
@@ -302,16 +218,86 @@ async def search_videos(q: str = Query(..., description="Search query")):
 
 @app.get("/api/info")
 async def get_video_info(url: str = Query(..., description="YouTube Video URL")):
+    debug_log = []
+    
+    # 1. yt-dlp 
     try:
-        return info_via_ytdlp(url)
+        data = info_via_ytdlp(url)
+        debug_log.append("ytdlp_cookies: " + ("FOUND" if os.path.exists(COOKIE_PATH) else "MISSING"))
+        if not data.get("formats"): raise Exception("yt-dlp returned no valid formats (only storyboards or blocked)")
+        return data
     except Exception as e_ytdlp:
+        debug_log.append(f"yt-dlp_err: {str(e_ytdlp)}")
+        
+        # 2. pytubefix with ANDROID_VR client
         try:
-            return info_via_pytubefix(url)
+            data = info_via_pytubefix(url)
+            if not data.get("formats"): raise Exception("pytubefix returned no formats")
+            return data
         except Exception as e_pytubefix:
-            raise HTTPException(
-                status_code=400,
-                detail=f"yt-dlp: {e_ytdlp} | pytubefix: {e_pytubefix}"
-            )
+            debug_log.append(f"pytubefix_err: {str(e_pytubefix)}")
+            
+            # 3. Ultimate Proxy logic (Moved out of info_via_ytdlp)
+            try:
+                import urllib.request, json
+                video_id = url.split("v=")[-1].split("&")[0]
+                instances = ["https://pipedapi.kavin.rocks", "https://pipedapi.in.projectsegfau.lt", "https://vid.puffyan.us"]
+                formats_list = []
+                for instance in instances:
+                    is_piped = "piped" in instance
+                    endpoint = f"{instance}/streams/{video_id}" if is_piped else f"{instance}/api/v1/videos/{video_id}"
+                    try:
+                        req = urllib.request.Request(endpoint, headers={"User-Agent": "Mozilla/5.0"})
+                        with urllib.request.urlopen(req, timeout=5) as response:
+                            p_data = json.loads(response.read().decode())
+                        
+                        if is_piped:
+                            for stream in p_data.get("videoStreams", []):
+                                if not stream.get("videoOnly"):
+                                    formats_list.append({"url": stream.get("url"), "resolution": stream.get("quality"), "type": "video", "mime_type": "video/mp4", "filesize": None})
+                            for stream in p_data.get("audioStreams", []):
+                                formats_list.append({"url": stream.get("url"), "resolution": "Audio", "type": "audio", "mime_type": "audio/m4a", "filesize": None})
+                        else:
+                            for f in p_data.get("formatStreams", []):
+                                formats_list.append({"url": f.get("url"), "resolution": f.get("resolution"), "type": "video", "mime_type": "video/mp4", "filesize": None})
+                        
+                        if formats_list:
+                            break
+                    except Exception as ex:
+                        debug_log.append(f"proxy_{instance.replace('https://', '')}_err: {str(ex)}")
+                        continue
+
+                if formats_list:
+                    return {
+                        "title": "YouTube Video (Proxy Fallback)",
+                        "author": "Unknown",
+                        "length": 0,
+                        "thumbnail_url": f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
+                        "views": 0,
+                        "description": "Information fetched via proxy because Railway IP is blocked.",
+                        "formats": formats_list
+                    }
+            except Exception as e_proxy:
+                debug_log.append(f"proxy_fatal: {str(e_proxy)}")
+
+            return {
+                "title": "Blocked by YouTube on Railway",
+                "author": "Backend Error",
+                "length": 0,
+                "thumbnail_url": "",
+                "views": 0,
+                "description": "YouTube blocks Railway IPs. Proxies failed.",
+                "formats": [
+                    {
+                        "url": "ERROR_LOG",
+                        "resolution": "Debug Info",
+                        "filesize": None,
+                        "mime_type": "text/plain",
+                        "type": "debug",
+                        "debug_txt": " | ".join(debug_log)
+                    }
+                ]
+            }
 
 
 if __name__ == "__main__":
