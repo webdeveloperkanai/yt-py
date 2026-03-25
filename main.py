@@ -77,6 +77,8 @@ def info_via_ytdlp(url: str):
     opts = {
         **YDL_OPTS_BASE,
         "skip_download": True,
+        "format": "all",  # Prevent "Requested format is not available"
+        "ignoreerrors": True, # Ignore format selection errors
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
