@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pytubefix import YouTube, Search
-from pytubefix.cli import on_progress
+import yt_dlp
 import os
 
 app = FastAPI(title="YouTube Downloader API")
@@ -15,76 +14,185 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Common yt-dlp options to bypass bot detection
+YDL_OPTS_BASE = {
+    "quiet": True,
+    "no_warnings": True,
+    "http_headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.google.com/",
+    },
+}
+
+
+def search_via_ytdlp(q: str):
+    opts = {
+        **YDL_OPTS_BASE,
+        "extract_flat": True,
+        "skip_download": True,
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"ytsearch50:{q}", download=False)
+        results = []
+        for entry in info.get("entries", []):
+            if not entry:
+                continue
+            results.append({
+                "id": entry.get("id"),
+                "url": f"https://www.youtube.com/watch?v={entry.get('id')}",
+                "title": entry.get("title"),
+                "author": entry.get("uploader") or entry.get("channel"),
+                "thumbnail_url": entry.get("thumbnail"),
+                "length": entry.get("duration"),
+                "views": entry.get("view_count"),
+            })
+        return results
+
+
+def search_via_pytubefix(q: str):
+    from pytubefix import Search
+    s = Search(q)
+    results = []
+    for video in s.videos[:50]:
+        results.append({
+            "id": video.video_id,
+            "url": video.watch_url,
+            "title": video.title,
+            "author": video.author,
+            "thumbnail_url": video.thumbnail_url,
+            "length": video.length,
+            "views": video.views,
+        })
+    return results
+
+
+def info_via_ytdlp(url: str):
+    opts = {
+        **YDL_OPTS_BASE,
+        "skip_download": True,
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    formats_list = []
+
+    for f in info.get("formats", []):
+        vcodec = f.get("vcodec", "none")
+        acodec = f.get("acodec", "none")
+        ext = f.get("ext", "")
+        height = f.get("height") or 0
+        filesize = f.get("filesize") or f.get("filesize_approx") or 0
+
+        # Progressive video (video+audio combined), mp4, up to 720p
+        if vcodec != "none" and acodec != "none" and ext == "mp4" and height <= 720 and height > 0:
+            formats_list.append({
+                "url": f.get("url"),
+                "resolution": f"{height}p",
+                "filesize": round(filesize / (1024 * 1024), 2) if filesize else None,
+                "mime_type": f"video/{ext}",
+                "type": "video",
+            })
+        # Best audio-only
+        elif vcodec == "none" and acodec != "none":
+            formats_list.append({
+                "url": f.get("url"),
+                "resolution": f"{f.get('abr', 'N/A')} kbps Audio",
+                "filesize": round(filesize / (1024 * 1024), 2) if filesize else None,
+                "mime_type": f"audio/{ext}",
+                "type": "audio",
+            })
+
+    # Deduplicate resolutions, keep highest filesize per resolution
+    seen = {}
+    for fmt in formats_list:
+        key = (fmt["resolution"], fmt["type"])
+        if key not in seen:
+            seen[key] = fmt
+    formats_list = sorted(seen.values(), key=lambda x: (x["type"], x["resolution"]), reverse=True)
+
+    description = info.get("description") or ""
+    return {
+        "title": info.get("title"),
+        "author": info.get("uploader") or info.get("channel"),
+        "length": info.get("duration"),
+        "thumbnail_url": info.get("thumbnail"),
+        "views": info.get("view_count"),
+        "description": (description[:200] + "...") if len(description) > 200 else description,
+        "formats": formats_list,
+    }
+
+
+def info_via_pytubefix(url: str):
+    from pytubefix import YouTube
+    yt = YouTube(url, use_oauth=False, allow_oauth_cache=True, client="WEB")
+
+    formats_list = []
+    streams = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc()
+    for stream in streams:
+        try:
+            res_str = stream.resolution or "0p"
+            res_val = int(res_str.replace("p", ""))
+            if res_val <= 720:
+                formats_list.append({
+                    "url": stream.url,
+                    "resolution": stream.resolution,
+                    "filesize": round(stream.filesize / (1024 * 1024), 2),
+                    "mime_type": stream.mime_type,
+                    "type": "video",
+                })
+        except (ValueError, AttributeError):
+            continue
+
+    audio_stream = yt.streams.filter(only_audio=True).order_by("abr").desc().first()
+    if audio_stream:
+        formats_list.append({
+            "url": audio_stream.url,
+            "resolution": f"{audio_stream.abr} Audio",
+            "filesize": round(audio_stream.filesize / (1024 * 1024), 2),
+            "mime_type": audio_stream.mime_type,
+            "type": "audio",
+        })
+
+    description = yt.description or ""
+    return {
+        "title": yt.title,
+        "author": yt.author,
+        "length": yt.length,
+        "thumbnail_url": yt.thumbnail_url,
+        "views": yt.views,
+        "description": (description[:200] + "...") if len(description) > 200 else description,
+        "formats": formats_list,
+    }
+
+
 @app.get("/api/search")
 async def search_videos(q: str = Query(..., description="Search query")):
     try:
-        s = Search(q)
-        results = []
-        for video in s.videos[:50]: # Limit to 50 results
-            results.append({
-                "id": video.video_id,
-                "url": video.watch_url,
-                "title": video.title,
-                "author": video.author,
-                "thumbnail_url": video.thumbnail_url,
-                "length": video.length,
-                "views": video.views
-            })
-        return results
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return search_via_ytdlp(q)
+    except Exception as e_ytdlp:
+        try:
+            return search_via_pytubefix(q)
+        except Exception as e_pytubefix:
+            raise HTTPException(
+                status_code=400,
+                detail=f"yt-dlp: {e_ytdlp} | pytubefix: {e_pytubefix}"
+            )
+
 
 @app.get("/api/info")
 async def get_video_info(url: str = Query(..., description="YouTube Video URL")):
     try:
-        # Using WEB client for better compatibility and metadata extraction
-        yt = YouTube(url, use_oauth=False, allow_oauth_cache=True, client='WEB')
-        
-        # Get video details
-        formats_list = []
-        
-        # Filter progressive streams (video + audio) up to 720p
-        streams = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc()
-        
-        for stream in streams:
-            try:
-                res_str = stream.resolution or "0p"
-                res_val = int(res_str.replace('p', ''))
-                if res_val <= 720:
-                    formats_list.append({
-                        "url": stream.url,
-                        "resolution": stream.resolution,
-                        "filesize": round(stream.filesize / (1024 * 1024), 2),
-                        "mime_type": stream.mime_type,
-                        "type": "video"
-                    })
-            except (ValueError, AttributeError):
-                continue
-        
-        # Add best audio-only stream
-        audio_stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
-        if audio_stream:
-            formats_list.append({
-                "url": audio_stream.url,
-                "resolution": f"{audio_stream.abr} Audio",
-                "filesize": round(audio_stream.filesize / (1024 * 1024), 2),
-                "mime_type": audio_stream.mime_type,
-                "type": "audio"
-            })
-        
-        video_details = {
-            "title": yt.title,
-            "author": yt.author,
-            "length": yt.length,
-            "thumbnail_url": yt.thumbnail_url,
-            "views": yt.views,
-            "description": (yt.description[:200] + "...") if yt.description else "",
-            "formats": formats_list
-        }
-        
-        return video_details
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return info_via_ytdlp(url)
+    except Exception as e_ytdlp:
+        try:
+            return info_via_pytubefix(url)
+        except Exception as e_pytubefix:
+            raise HTTPException(
+                status_code=400,
+                detail=f"yt-dlp: {e_ytdlp} | pytubefix: {e_pytubefix}"
+            )
+
 
 if __name__ == "__main__":
     import uvicorn

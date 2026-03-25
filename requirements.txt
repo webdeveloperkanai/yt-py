@@ -1,5 +1,5 @@
 fastapi
 uvicorn
 pytubefix
-nodejs-wheel
+yt-dlp
 python-multipart
