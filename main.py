@@ -20,6 +20,11 @@ app.add_middleware(
 YDL_OPTS_BASE: dict[str, Any] = {
     "quiet": True,
     "no_warnings": True,
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "ios", "web"]
+        }
+    },
     "http_headers": {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
@@ -117,7 +122,8 @@ def info_via_ytdlp(url: str):
     # Fallback: if we filtered out everything (e.g., DASH-only video), just return everything we have
     if not formats_list and info.get("formats"):
         for f in info.get("formats", []):
-            if not f.get("url"):
+            url = f.get("url", "")
+            if not url or "sb/" in url or f.get("format_note") == "storyboard":
                 continue
             fs = f.get("filesize") or f.get("filesize_approx") or 0
             fs_val = float(fs) / (1024 * 1024) if fs else 0
