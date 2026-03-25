@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
 import os
 
+from typing import Any
+
 app = FastAPI(title="YouTube Downloader API")
 
 # Enable CORS for frontend interaction
@@ -15,7 +17,7 @@ app.add_middleware(
 )
 
 # Common yt-dlp options to bypass bot detection
-YDL_OPTS_BASE = {
+YDL_OPTS_BASE: dict[str, Any] = {
     "quiet": True,
     "no_warnings": True,
     "http_headers": {
@@ -24,6 +26,10 @@ YDL_OPTS_BASE = {
         "Referer": "https://www.google.com/",
     },
 }
+
+# If cookies.txt exists in the backend directory, use it to bypass sign-in/429
+if os.path.exists("cookies.txt"):
+    YDL_OPTS_BASE["cookiefile"] = "cookies.txt"
 
 
 def search_via_ytdlp(q: str):
