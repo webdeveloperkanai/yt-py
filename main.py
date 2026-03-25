@@ -20,7 +20,7 @@ async def search_videos(q: str = Query(..., description="Search query")):
     try:
         s = Search(q)
         results = []
-        for video in s.videos[:10]: # Limit to 10 results
+        for video in s.videos[:50]: # Limit to 50 results
             results.append({
                 "id": video.video_id,
                 "url": video.watch_url,
