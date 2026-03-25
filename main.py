@@ -7,6 +7,9 @@ from typing import Any
 
 app = FastAPI(title="YouTube Downloader API")
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+COOKIE_PATH = os.path.join(BASE_DIR, "cookies.txt")
+
 # Enable CORS for frontend interaction
 app.add_middleware(
     CORSMiddleware,
@@ -32,9 +35,9 @@ YDL_OPTS_BASE: dict[str, Any] = {
     },
 }
 
-# If cookies.txt exists in the backend directory, use it to bypass sign-in/429
-if os.path.exists("cookies.txt"):
-    YDL_OPTS_BASE["cookiefile"] = "cookies.txt"
+# Force absolute path for cookies to guarantee Railway Docker container finds them
+if os.path.exists(COOKIE_PATH):
+    YDL_OPTS_BASE["cookiefile"] = COOKIE_PATH
 
 
 def search_via_ytdlp(q: str):
@@ -135,6 +138,45 @@ def info_via_ytdlp(url: str):
                 "type": "video" if str(f.get("vcodec", "none")).lower() != "none" else "audio",
             })
 
+    # Ultimate Proxy Fallback if VPS IP is completely blocked from getting video URLs
+    if not formats_list:
+        import urllib.request
+        import json
+        video_id = url.split("v=")[-1].split("&")[0]
+        # Public invidious instances to bypass YouTube IP bans
+        instances = ["https://vid.puffyan.us", "https://invidious.nerdvpn.de", "https://yewtu.be"]
+        for instance in instances:
+            try:
+                req = urllib.request.Request(f"{instance}/api/v1/videos/{video_id}", headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    data = json.loads(response.read().decode())
+                
+                for f in data.get("formatStreams", []):
+                    resol = f.get("resolution", "Unknown")
+                    if "1080" in resol or "4k" in resol.lower() or "1440" in resol: continue
+                    formats_list.append({
+                        "url": f.get("url"),
+                        "resolution": resol,
+                        "filesize": None,
+                        "mime_type": str(f.get("type", "video/mp4")).split(";")[0],
+                        "type": "video"
+                    })
+                
+                for f in data.get("adaptiveFormats", []):
+                    mime = str(f.get("type", "")).split(";")[0]
+                    if mime.startswith("audio/"):
+                        formats_list.append({
+                            "url": f.get("url"),
+                            "resolution": f.get("quality", "Audio") + " " + f.get("bitrate", "kbps"),
+                            "filesize": None,
+                            "mime_type": mime,
+                            "type": "audio"
+                        })
+                if formats_list:
+                    break
+            except Exception:
+                continue
+
     # Deduplicate resolutions, keep highest filesize per resolution
     seen = {}
     for fmt in formats_list:
@@ -148,7 +190,7 @@ def info_via_ytdlp(url: str):
         "title": info.get("title"),
         "author": info.get("uploader") or info.get("channel"),
         "length": info.get("duration"),
-        "thumbnail_url": info.get("thumbnail"),
+        "thumbnail_url": info.get("thumbnail") or f"https://i.ytimg.com/vi/{str(url).split('v=')[-1].split('&')[0]}/maxresdefault.jpg",
         "views": info.get("view_count"),
         "description": (description[:200] + "...") if len(description) > 200 else description,
         "formats": formats_list,
