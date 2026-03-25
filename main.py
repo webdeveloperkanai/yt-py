@@ -114,6 +114,21 @@ def info_via_ytdlp(url: str):
                 "type": "audio",
             })
 
+    # Fallback: if we filtered out everything (e.g., DASH-only video), just return everything we have
+    if not formats_list and info.get("formats"):
+        for f in info.get("formats", []):
+            if not f.get("url"):
+                continue
+            fs = f.get("filesize") or f.get("filesize_approx") or 0
+            fs_val = float(fs) / (1024 * 1024) if fs else 0
+            formats_list.append({
+                "url": f.get("url"),
+                "resolution": f.get("format_note") or f.get("resolution") or (f"{f.get('height')}p" if f.get("height") else "Audio/Unknown"),
+                "filesize": round(fs_val, 2) if fs_val > 0 else None,
+                "mime_type": f"video/{f.get('ext', 'mp4')}" if str(f.get("vcodec", "none")).lower() != "none" else f"audio/{f.get('ext', 'm4a')}",
+                "type": "video" if str(f.get("vcodec", "none")).lower() != "none" else "audio",
+            })
+
     # Deduplicate resolutions, keep highest filesize per resolution
     seen = {}
     for fmt in formats_list:
