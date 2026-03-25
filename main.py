@@ -37,8 +37,8 @@ async def search_videos(q: str = Query(..., description="Search query")):
 @app.get("/api/info")
 async def get_video_info(url: str = Query(..., description="YouTube Video URL")):
     try:
-        # Using ANDROID client and oauth to bypass sign-in issues
-        yt = YouTube(url, use_oauth=False, allow_oauth_cache=True)
+        # Using WEB client for better compatibility and metadata extraction
+        yt = YouTube(url, use_oauth=False, allow_oauth_cache=True, client='WEB')
         
         # Get video details
         formats_list = []
