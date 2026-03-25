@@ -143,39 +143,67 @@ def info_via_ytdlp(url: str):
         import urllib.request
         import json
         video_id = url.split("v=")[-1].split("&")[0]
-        # Public invidious instances to bypass YouTube IP bans
-        instances = ["https://vid.puffyan.us", "https://invidious.nerdvpn.de", "https://yewtu.be"]
-        for instance in instances:
-            try:
-                req = urllib.request.Request(f"{instance}/api/v1/videos/{video_id}", headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    data = json.loads(response.read().decode())
-                
-                for f in data.get("formatStreams", []):
-                    resol = f.get("resolution", "Unknown")
-                    if "1080" in resol or "4k" in resol.lower() or "1440" in resol: continue
-                    formats_list.append({
-                        "url": f.get("url"),
-                        "resolution": resol,
-                        "filesize": None,
-                        "mime_type": str(f.get("type", "video/mp4")).split(";")[0],
-                        "type": "video"
-                    })
-                
-                for f in data.get("adaptiveFormats", []):
-                    mime = str(f.get("type", "")).split(";")[0]
-                    if mime.startswith("audio/"):
+        
+        # 1. Piped API Fallback (Very reliable)
+        try:
+            req = urllib.request.Request(f"https://pipedapi.kavin.rocks/streams/{video_id}", headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                piped_data = json.loads(response.read().decode())
+            for stream in piped_data.get("videoStreams", []):
+                if stream.get("videoOnly"): continue
+                resol = stream.get("quality", "Unknown")
+                formats_list.append({
+                    "url": stream.get("url"),
+                    "resolution": resol,
+                    "filesize": None,
+                    "mime_type": f"video/{str(stream.get('format', 'mp4')).lower()}",
+                    "type": "video"
+                })
+            for stream in piped_data.get("audioStreams", []):
+                formats_list.append({
+                    "url": stream.get("url"),
+                    "resolution": stream.get("quality", "Audio"),
+                    "filesize": None,
+                    "mime_type": f"audio/{str(stream.get('format', 'm4a')).lower()}",
+                    "type": "audio"
+                })
+        except Exception:
+            pass
+
+        # 2. Public invidious instances fallback
+        if not formats_list:
+            instances = ["https://vid.puffyan.us", "https://invidious.nerdvpn.de", "https://yewtu.be"]
+            for instance in instances:
+                try:
+                    req = urllib.request.Request(f"{instance}/api/v1/videos/{video_id}", headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        data = json.loads(response.read().decode())
+                    
+                    for f in data.get("formatStreams", []):
+                        resol = f.get("resolution", "Unknown")
+                        if "1080" in resol or "4k" in resol.lower() or "1440" in resol: continue
                         formats_list.append({
                             "url": f.get("url"),
-                            "resolution": f.get("quality", "Audio") + " " + f.get("bitrate", "kbps"),
+                            "resolution": resol,
                             "filesize": None,
-                            "mime_type": mime,
-                            "type": "audio"
+                            "mime_type": str(f.get("type", "video/mp4")).split(";")[0],
+                            "type": "video"
                         })
-                if formats_list:
-                    break
-            except Exception:
-                continue
+                    
+                    for f in data.get("adaptiveFormats", []):
+                        mime = str(f.get("type", "")).split(";")[0]
+                        if mime.startswith("audio/"):
+                            formats_list.append({
+                                "url": f.get("url"),
+                                "resolution": f.get("quality", "Audio") + " " + f.get("bitrate", "kbps"),
+                                "filesize": None,
+                                "mime_type": mime,
+                                "type": "audio"
+                            })
+                    if formats_list:
+                        break
+                except Exception:
+                    continue
 
     # Deduplicate resolutions, keep highest filesize per resolution
     seen = {}
